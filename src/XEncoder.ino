@@ -7,7 +7,7 @@
 
 #define PIN_A 2
 #define PIN_B 3
-#define PIN_E 4
+#define PIN_E A0
 
 #define PULSE_PER_MM_ADDRESS 10
 #define DEFAULT_PULSE_PER_MM 10.24f
@@ -15,6 +15,13 @@
 #define COMPARE_VALUE_TIMER OCR1A
 #define turn_on_timer1 (TIMSK1 |= (1 << OCIE1A))
 #define turn_off_timer1 (TIMSK1 &= ~(1 << OCIE1A))
+
+typedef enum
+{
+  NOT_CONNECTED = 0,
+  FREE = 1,
+  READING = 2
+} STATUS;
 
 bool is_string_completed = false;
 String received_string = "";
@@ -30,12 +37,17 @@ bool is_auto_send_e_stt;
 bool is_absolute_mode = true;
 volatile bool is_timer_running = false;
 
+STATUS stt = NOT_CONNECTED;
+bool led_stt = false;
+unsigned long last_millis = 0;
+
 void setup()
 {
   Serial.begin(115200);
   pinMode(PIN_A, INPUT_PULLUP);
   pinMode(PIN_B, INPUT_PULLUP);
   pinMode(PIN_E, INPUT_PULLUP);
+  pinMode(LED_BUILTIN, OUTPUT);
   attachInterrupt(digitalPinToInterrupt(PIN_A), intterupt_a, CHANGE);
 
   init_timer1();
@@ -52,9 +64,29 @@ void setup()
 
 void loop()
 {
+
+  if (stt == NOT_CONNECTED && (millis() - last_millis > 1000))
+  {
+    digitalWrite(LED_BUILTIN, led_stt);
+    last_millis = millis();
+    led_stt = !led_stt;
+  }
+  else if (stt == FREE && (millis() - last_millis > 200))
+  {
+    digitalWrite(LED_BUILTIN, led_stt);
+    last_millis = millis();
+    led_stt = !led_stt;
+  }
+  else if (stt == READING && (millis() - last_millis > 500))
+  {
+    digitalWrite(LED_BUILTIN, led_stt);
+    last_millis = millis();
+    led_stt = !led_stt;
+  }
+
   if (is_auto_send_e_stt)
   {
-    bool _e_stt = READ(PIN_E);
+    bool _e_stt = digitalRead(PIN_E);
     if (_e_stt != e_stt)
     {
       e_stt = _e_stt;
@@ -162,8 +194,15 @@ void serial_execute()
     Serial.println("YesXEncoder");
     is_string_completed = false;
     received_string = "";
-    is_timer_running = true;
-    turn_on_timer1;
+
+    stt = FREE;
+
+    if (is_m317_executing)
+    {
+      is_timer_running = true;
+      turn_on_timer1;
+    }
+
     return;
   }
 
@@ -209,18 +248,35 @@ void serial_execute()
     else
     {
       int _per = received_string.substring(6).toInt(); // eg: "M317 T100" -> period = 100
-      if (_per > 0)
+      if (_per > 50)
+      {
+        stt = READING;
         period = _per;
-      timer_counter = 0;
-      is_m317_executing = true;
+        timer_counter = 0;
+        is_m317_executing = true;
+      }
+      else
+      {
+        stt = FREE;
+        timer_counter = 0;
+        is_m317_executing = false;
+      }
+
       Serial.println("Ok");
     }
   }
   else if (message_buffer == "M318")
   {
-    pulse_per_mm = received_string.substring(6).toFloat();
-    EEPROM.put(PULSE_PER_MM_ADDRESS, pulse_per_mm);
-    Serial.println("Ok");
+    if (received_string.length() < 5)
+    {
+      Serial.println(pulse_per_mm);
+    }
+    else
+    {
+      pulse_per_mm = received_string.substring(6).toFloat();
+      EEPROM.put(PULSE_PER_MM_ADDRESS, pulse_per_mm);
+      Serial.println("Ok");
+    }
   }
   else if (message_buffer == "M319")
   {
@@ -228,7 +284,7 @@ void serial_execute()
     if (mode == 'V')
     {
       is_auto_send_e_stt = false;
-      e_stt = READ(PIN_E);
+      e_stt = digitalRead(PIN_E);
       Serial.print('V');
       Serial.println(!e_stt);
     }
@@ -239,13 +295,14 @@ void serial_execute()
     }
   }
 
+  is_string_completed = false;
+  received_string = "";
+
   if (is_m317_executing)
   {
     is_timer_running = true;
     turn_on_timer1;
   }
-  is_string_completed = false;
-  received_string = "";
 }
 
 // WARNING: You may need these function to build
